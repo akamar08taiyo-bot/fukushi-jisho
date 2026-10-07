@@ -232,6 +232,8 @@ body.can-edit .pick { display: flex; }
 .ee-acts { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .ee-acts .fcount { margin-right: auto; font-size: 12px; color: var(--muted); }
 .ee-acts .btn { min-height: 40px; }
+.eedit .ferr { scroll-margin: calc(var(--hdr, 150px) + 12px) 0 110px; }
+.eedit .ferr button { margin-left: 10px; font: inherit; font-size: 13px; color: var(--accent); background: transparent; border: 0; padding: 4px 2px; text-decoration: underline; cursor: pointer; }
 mark { background: var(--mark); color: inherit; border-radius: 2px; }
 .empty { margin-top: 18px; padding: 22px 16px; text-align: center; color: var(--muted); background: var(--surface); border: 1px dashed var(--line); border-radius: 12px; }
 
@@ -353,6 +355,7 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
   var selected = new Set(), confirming = false;
   var editing = 0, pendingRender = false;   // 編集中は画面の作り直しを待つ
   var openEd = null;                         // 開いている文の編集欄
+  var anchor = null;                         // 編集欄の外で押した文と、その画面上の位置
 
   var STORE = 'fukushi-dict:v1';
   try {
@@ -794,8 +797,7 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
     if (!editable || !S) return;
     if (openEd) {
       if (openEd.id === id) { (focus === 'y' ? openEd.yi : openEd.tx).focus(); return; }
-      if (edDirty(openEd)) { showToast('編集中の文があります。「保存」か「やめる」を押してください。'); openEd.tx.focus(); return; }
-      closeEditor(true);
+      if (!commitEditor()) return;
     }
     var li = listEl.querySelector('.entry[data-id="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
     var o = ROWS[BYID[id]];
@@ -810,9 +812,7 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
       '<label class="field"><span class="lab">小分類</span><input class="ee-s" maxlength="30" list="eeSubList" autocomplete="off"></label>' +
       '</div><p class="ferr" role="alert" hidden></p>' +
       '<div class="ee-acts"><span class="fcount"></span>' +
-      (o.edited ? '<button type="button" class="btn" data-act="reset">元の文に戻す</button>' : '') +
-      '<button type="button" class="btn" data-act="cancel">やめる</button>' +
-      '<button type="button" class="btn primary" data-act="save">保存</button></div>';
+      (o.edited ? '<button type="button" class="btn" data-act="reset">元の文に戻す</button>' : '') + '</div>';
     var ed = { id: id, li: li, body: body, box: box,
       tx: box.querySelector('.ee-t'), yi: box.querySelector('.ee-y'), cs: box.querySelector('.ee-c'), si: box.querySelector('.ee-s'),
       err: box.querySelector('.ferr'), cnt: box.querySelector('.fcount') };
@@ -837,14 +837,13 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
     ed.cs.addEventListener('change', function () { fillSubList(eeSubList, ed.cs.value); });
     box.addEventListener('keydown', function (e) {
       if (e.isComposing || e.keyCode === 229) return;
-      if (e.key === 'Escape') { e.preventDefault(); closeEditor(); }
-      else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'SELECT') { e.preventDefault(); saveEditor(); }
+      if (e.key === 'Escape') { e.preventDefault(); closeEditor(); }   // 変えた内容を取り消して閉じる
+      else if (e.key === 'Enter' && e.target.tagName !== 'BUTTON' && e.target.tagName !== 'SELECT') { e.preventDefault(); commitEditor(); }
     });
     box.addEventListener('click', function (e) {
       var b = e.target.closest('button[data-act]');
       if (!b) return;
-      if (b.dataset.act === 'save') saveEditor();
-      else if (b.dataset.act === 'cancel') closeEditor();
+      if (b.dataset.act === 'revert') closeEditor();
       else if (b.dataset.act === 'reset') {
         var cur = ROWS[BYID[ed.id]];
         closeEditor(true);
@@ -855,10 +854,14 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
       }
     });
     var target = focus === 'y' ? ed.yi : ed.tx;
-    target.focus();
+    var a = anchor && anchor.id === id ? anchor : null;
+    anchor = null;
+    target.focus(a ? { preventScroll: true } : undefined);
     if (target === ed.tx) ed.tx.setSelectionRange(ed.tx.value.length, ed.tx.value.length);
     else ed.yi.select();
+    if (a) window.scrollBy(0, li.getBoundingClientRect().top - a.top);   // 押した文が画面の同じ位置に来るようにする
   }
+  // 編集欄を閉じる（ここでは保存しない）
   function closeEditor(silent) {
     if (!openEd) return;
     var ed = openEd;
@@ -867,33 +870,57 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
     ed.body.hidden = false;
     ed.li.classList.remove('editing');
     editing--;
-    if (!silent && !editing) render();
+    if (!silent && !editing && pendingRender) render();
   }
-  function saveEditor() {
+  // 変えた内容を保存して閉じる。閉じたら true、直すところがあって閉じなかったら false
+  // keepOpen：画面を離れるときなど、閉じずに保存だけする
+  function commitEditor(keepOpen) {
     var ed = openEd;
-    if (!ed) return;
+    if (!ed) return true;
     var o = ROWS[BYID[ed.id]];
-    if (!o) { closeEditor(); return; }
-    var v = edValues(ed);
-    var err = textError(v.t) || yomiError(v.y);
-    if (!err && chars(v.s) > 30) err = '小分類は30文字以内にしてください。';
+    if (!o) { closeEditor(); return true; }
+    if (!edDirty(ed)) { if (!keepOpen) closeEditor(); return true; }
+    var v = edValues(ed), err = textError(v.t), field = ed.tx;
+    if (!err && (err = yomiError(v.y))) field = ed.yi;
+    if (!err && chars(v.s) > 30) { err = '小分類は30文字以内にしてください。'; field = ed.si; }
     if (!err && ROWS.some(function (r) { return r.id !== o.id && r.y === v.y && r.t === v.t; })) err = '同じよみ・同じ言葉がすでにあります。';
-    if (err) { ed.err.textContent = err; ed.err.hidden = false; return; }
+    if (err) {
+      if (!keepOpen) {
+        ed.err.innerHTML = esc(err) + '<button type="button" data-act="revert">変更を取り消す</button>';
+        ed.err.hidden = false;
+        field.focus({ preventScroll: true });
+        ed.err.scrollIntoView({ block: 'nearest' });   // 上の検索欄や下のお知らせに隠れない位置まで動かす
+      }
+      return false;
+    }
     var sk = resolveSk(v.c, v.s) || (v.c === o.ck ? o.sk : (o.nosub ? NOSUB : o.sk));
     var next = editBody(o, { t: v.t, y: v.y, c: v.c, s: sk });
-    closeEditor(true);
-    if (sameEdit(edits[o.id], next)) { if (!editing) render(); return; }
+    if (keepOpen) ed.init = v; else closeEditor(true);
+    if (sameEdit(edits[o.id], next)) { if (!keepOpen && !editing) render(); return true; }
     var ch = {};
     ch[o.id] = next;
     setEdits(ch, '変更を保存しました。', true);
+    return true;
   }
 
   // ---- 画面の操作
-  function busyEditing() {
-    if (openEd && edDirty(openEd)) { showToast('編集中の文があります。「保存」か「やめる」を押してください。'); openEd.tx.focus(); return true; }
-    if (openEd) closeEditor(true);
-    return false;
-  }
+  // 編集欄が開いていたら保存して閉じる（直すところがあって閉じられないときは true）
+  function busyEditing() { return !!openEd && !commitEditor(); }
+  // 編集欄の外を押したら、変えた内容を保存して閉じる
+  var downIn = false;
+  document.addEventListener('pointerdown', function (e) { downIn = !!openEd && openEd.li.contains(e.target); }, true);
+  document.addEventListener('click', function (e) {
+    var started = downIn && e.detail > 0;   // 編集欄の中から押したまま外へ動かしたとき（文字の選択など）は閉じない
+    downIn = false;
+    if (!openEd || !e.isTrusted || started || openEd.li.contains(e.target)) return;
+    var en = e.target.closest ? e.target.closest('.entry') : null;
+    anchor = en ? { id: en.dataset.id, top: en.getBoundingClientRect().top } : null;
+    if (!commitEditor()) { e.preventDefault(); e.stopPropagation(); }
+    setTimeout(function () { anchor = null; }, 0);
+  }, true);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden' && openEd) commitEditor(true);   // 画面を離れるときも保存しておく
+  });
   tabsEl.addEventListener('click', function (e) {
     var b = e.target.closest('.tab'); if (!b) return;
     if (busyEditing()) return;
@@ -934,6 +961,12 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
   });
   listEl.addEventListener('click', function (e) {
     var t = e.target;
+    if (!t.isConnected) {   // 保存して一覧を描き直した直後：押した文の編集欄だけを開く
+      var en = t.closest('.entry'), yk0 = t.closest('button.ykey');
+      if (yk0 && yk0.dataset.scope === 'e') openEditor(yk0.dataset.k, 'y');
+      else if (en && (t.closest('button.edit') || t.closest('.txt.can'))) openEditor(en.dataset.id, 't');
+      return;
+    }
     var nm = t.closest('button.nm');
     if (nm) { startName(nm); return; }
     var yk = t.closest('button.ykey');
@@ -1082,7 +1115,7 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
       lastCat = p.ck;
       fYomi.value = ''; fText.value = '';
       closeForm(true);
-      if (openEd) closeEditor(true);
+      if (openEd && !commitEditor()) closeEditor(true);
       state.tab = CATTAB.hasOwnProperty(p.ck) ? CATTAB[p.ck] : OTHER;
       state.q = ''; qEl.value = '';
       selected.clear(); confirming = false;
