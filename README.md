@@ -72,7 +72,7 @@ Google日本語入力のユーザー辞書として登録できる形にまと�
 Google日本語入力は1語あたり最大300バイト（全角100文字）までです。すべての登録を100文字以内にしています。
 Excelの「文字数」「判定」列は自動計算なので、文章を書き換えたときも100文字を超えていないか確認できます。
 
-## 公開のしかた（初回のみ）
+## 公開のしかた
 
-リポジトリの Settings → Pages → Build and deployment の Source を「GitHub Actions」にすると、
-main に push するたびに `site/` の中身が公開ページに反映されます（`.github/workflows/pages.yml`）。
+公開ページは `gh-pages` の枝に置いた `index.html` を表示しています（Settings → Pages の Source は「Deploy from a branch」の gh-pages）。
+main の `site/` を書き換えて push すると、`.github/workflows/pages.yml` が同じ中身を `gh-pages` に置き、数分で公開ページが新しくなります。

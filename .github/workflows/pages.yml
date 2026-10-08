@@ -1,34 +1,35 @@
 name: 一覧ページを公開（GitHub Pages）
-
+# 公開ページは gh-pages の枝を表示している（Settings → Pages → Source は「Deploy from a branch」・gh-pages）。
+# main の site/ を書き換えたら、その中身を gh-pages の枝に置く。
 on:
   push:
     branches: [main]
+    paths: ['site/**']
   workflow_dispatch: {}
-
 permissions:
-  contents: read
-  pages: write
-  id-token: write
-
+  contents: write
 concurrency:
   group: pages
-  cancel-in-progress: true
-
+  cancel-in-progress: false
 jobs:
-  deploy:
+  publish:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-
-      # 初回だけ、リポジトリの Settings → Pages → Source を「GitHub Actions」にしておく
-      - uses: actions/configure-pages@v5
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v5
+      - name: site/ の中身を gh-pages に反映する
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --depth=1 origin +refs/heads/gh-pages:refs/remotes/origin/gh-pages
+          git worktree add --detach "$RUNNER_TEMP/pages" origin/gh-pages
+          cp -a site/. "$RUNNER_TEMP/pages/"
+          touch "$RUNNER_TEMP/pages/.nojekyll"
+          cd "$RUNNER_TEMP/pages"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "公開ページに変更はありません。"
+            exit 0
+          fi
+          git commit -m "公開ページを更新（main ${GITHUB_SHA::7}）"
+          git push origin HEAD:gh-pages
