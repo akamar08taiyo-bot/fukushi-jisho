@@ -196,10 +196,11 @@ body.can-edit .pick { display: flex; }
 .badge { font-size: 11px; line-height: 1.5; padding: 1px 7px; border-radius: 4px; font-weight: 700; letter-spacing: .04em; }
 .badge.del { background: var(--danger-soft); color: var(--danger); }
 .eacts { display: inline-flex; gap: 6px; margin-left: auto; }
-.edit, .copy {
+.edit, .copy, .remove, .restore {
   font: inherit; font-size: 12px; line-height: 1.4; padding: 4px 10px; cursor: pointer;
   border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--accent);
 }
+.remove { color: var(--danger); }
 .copy.done { color: var(--fix); border-color: var(--fix); }
 
 /* その場で編集 */
@@ -560,7 +561,10 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
           '<span class="len"><span class="meter" aria-hidden="true"><i style="width:' + Math.min(n, 100) + '%"></i></span>' + n + '字</span>' +
           (isDel(o) ? '<span class="badge del">削除済み</span>' : '') +
           '<span class="eacts">' + (editable ? '<button class="edit" type="button">編集</button>' : '') +
-          '<button class="copy" type="button">コピー</button></span></div></div></li>';
+          '<button class="copy" type="button">コピー</button>' +
+          (!editable ? '' : isDel(o) ? '<button class="restore" type="button">元に戻す</button>'
+            : '<button class="remove" type="button" aria-label="この文を削除">削除</button>') +
+          '</span></div></div></li>';
       });
       html += '</ul></section>';
     });
@@ -686,15 +690,32 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
       if (ok) showToast(ids.length + '件を削除しました。', function () { doRestore(ids); });
     });
   }
-  function doRestore(ids) {
+  function doRestore(ids, msg) {
     if (!ids.length) return;
     var changes = {};
-    ids.forEach(function (id) { changes[id] = null; });
-    selected.clear(); confirming = false; busy = true;
+    ids.forEach(function (id) { changes[id] = null; selected.delete(id); });
+    confirming = false; busy = true;
     setMap(function () { return deleted; }, 'deleted', changes, null).then(function (ok) {
       busy = false; renderBar();
-      if (ok) showToast(ids.length + '件を元に戻しました。');
+      if (ok) showToast(msg || ids.length + '件を元に戻しました。');
     });
+  }
+  // 文ごとの「削除」ボタン：その1件だけ削除する（ほかに選んでいる文はそのまま）
+  function short(t) { var a = Array.from(t); return a.length > 18 ? a.slice(0, 18).join('') + '…' : t; }
+  function removeOne(id) {
+    var o = ROWS[BYID[id]];
+    if (!o || deleted[id] || !S) return;
+    var ch = {};
+    ch[id] = { at: new Date().toISOString(), y: o.y, t: o.t };
+    selected.delete(id);
+    setMap(function () { return deleted; }, 'deleted', ch, null).then(function (ok) {
+      renderBar();
+      if (ok) showToast('「' + short(o.t) + '」を削除しました。', function () { doRestore([id], '元に戻しました。'); });
+    });
+  }
+  function restoreOne(id) {
+    var o = ROWS[BYID[id]];
+    if (o && deleted[id]) doRestore([id], '「' + short(o.t) + '」を元に戻しました。');
   }
 
   // ---- その場で編集（名前・よみ）
@@ -975,6 +996,10 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; }
     if (eb) { openEditor(eb.closest('.entry').dataset.id, 't'); return; }
     var cb = t.closest('button.copy');
     if (cb) { copyText(cb); return; }
+    var rm = t.closest('button.remove');
+    if (rm) { removeOne(rm.closest('.entry').dataset.id); return; }
+    var rs = t.closest('button.restore');
+    if (rs) { restoreOne(rs.closest('.entry').dataset.id); return; }
     var tx = t.closest('.txt.can');
     if (tx && !String(window.getSelection ? window.getSelection() : '')) openEditor(tx.closest('.entry').dataset.id, 't');
   });
